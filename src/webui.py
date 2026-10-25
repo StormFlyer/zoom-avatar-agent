@@ -6,11 +6,17 @@ meeting link, hit Go.
 Bound to 127.0.0.1 deliberately. The page can start processes, upload files and
 send an avatar into a meeting, so it must not be reachable from the network.
 There is no authentication precisely because it never leaves this machine.
+
+On a server, set BEHIND_PROXY=1 and PANEL_PASSWORD. The panel then listens on
+every interface for a reverse proxy (Coolify/Traefik) that provides https, and
+every page except /healthz asks for that password. See DEPLOY-COOLIFY.md.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import os
@@ -32,8 +38,14 @@ _ROOT = pathlib.Path(__file__).resolve().parents[1]
 load_dotenv(_ROOT / ".env.local")
 load_dotenv(_ROOT / ".env")
 
-from fastapi import FastAPI, HTTPException, UploadFile  # noqa: E402
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse  # noqa: E402
+from fastapi import FastAPI, HTTPException, Request, UploadFile  # noqa: E402
+from fastapi.responses import (  # noqa: E402
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    Response,
+)
 
 import catalog  # noqa: E402
 import rag  # noqa: E402
@@ -42,12 +54,24 @@ import voices as voices_mod  # noqa: E402
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("zoom-avatar.webui")
 
+
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 # Loopback by default, deliberately: this page can start processes and send an
 # avatar into a meeting, so anything that can reach it can do those things. Set
 # ALLOW_LAN=1 in .env.local to also answer on the local network -- useful for
 # driving it from a phone, and still not reachable from outside the router.
-ALLOW_LAN = os.getenv("ALLOW_LAN", "").strip().lower() in {"1", "true", "yes", "on"}
-HOST = "0.0.0.0" if ALLOW_LAN else "127.0.0.1"  # noqa: S104 - opt-in, see above
+#
+# On a server a reverse proxy terminates https and talks to us over the
+# container network, so we listen on every interface, skip the LAN certificate
+# and the browser launch, and refuse to run without a password (see main()).
+BEHIND_PROXY = _env_flag("BEHIND_PROXY")
+ALLOW_LAN = _env_flag("ALLOW_LAN") and not BEHIND_PROXY
+PANEL_USER = os.getenv("PANEL_USER", "").strip() or "admin"
+PANEL_PASSWORD = os.getenv("PANEL_PASSWORD", "")
+HOST = "0.0.0.0" if ALLOW_LAN or BEHIND_PROXY else "127.0.0.1"  # noqa: S104 - opt-in, see above
 PORT = 8765
 PAGE = pathlib.Path(__file__).with_name("webui.html")
 BRAND_DIR = _ROOT / "brand"
@@ -56,6 +80,43 @@ MAX_IMAGE_BYTES = 25 * 1024 * 1024
 MAX_DOC_BYTES = 50 * 1024 * 1024
 
 app = FastAPI(title="Zoom Avatar Generator")
+
+
+def _login_ok(header: str) -> bool:
+    """True if an `Authorization: Basic ...` header carries the panel login."""
+    scheme, _, token = header.partition(" ")
+    if scheme.lower() != "basic":
+        return False
+    try:
+        user, _, password = base64.b64decode(token).decode("utf-8").partition(":")
+    except (binascii.Error, UnicodeDecodeError):
+        return False
+    # Both compared, never short-circuited, so timing says nothing about which
+    # half was wrong.
+    user_ok = secrets.compare_digest(user.encode(), PANEL_USER.encode())
+    password_ok = secrets.compare_digest(password.encode(), PANEL_PASSWORD.encode())
+    return user_ok and password_ok
+
+
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    """HTTP Basic login on every route but /healthz, when PANEL_PASSWORD is set.
+
+    Browsers send the credentials again on every same-origin request, which
+    covers the page's fetch calls, uploads, <img> and <audio> tags.
+    """
+    if (
+        not PANEL_PASSWORD
+        or request.url.path == "/healthz"
+        or _login_ok(request.headers.get("authorization", ""))
+    ):
+        return await call_next(request)
+    return Response(
+        "Login required",
+        status_code=401,
+        headers={"WWW-Authenticate": 'Basic realm="Avatar control panel", charset="UTF-8"'},
+    )
+
 
 # Knowledge-base indexing takes tens of seconds, so it runs in a thread and the
 # page polls. Keyed by job id.
@@ -82,6 +143,12 @@ def _safe_name(name: str) -> str:
 # --------------------------------------------------------------------------- #
 # Page
 # --------------------------------------------------------------------------- #
+
+
+@app.get("/healthz")
+async def healthz() -> PlainTextResponse:
+    """For the proxy's health check. Open to everyone, so it says nothing."""
+    return PlainTextResponse("ok")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -143,8 +210,6 @@ async def root_ca() -> FileResponse:
     # Safari files it away in Downloads and nothing ever appears under Device
     # Management; served inline with this content type, Safari offers to install
     # it as a profile. FileResponse always sets a disposition, hence Response.
-    from fastapi.responses import Response
-
     return Response(
         content=root.read_bytes(),
         media_type="application/x-x509-ca-cert",
@@ -467,8 +532,6 @@ async def voices_design(payload: dict) -> JSONResponse:
 
 @app.get("/api/voices/design/{token}/{index}.wav")
 async def voices_design_audio(token: str, index: int):
-    from fastapi.responses import Response
-
     try:
         wav = voices_mod.candidate_audio(token, index)
     except voices_mod.VoiceError as exc:
@@ -492,8 +555,6 @@ async def voices_design_save(payload: dict) -> JSONResponse:
 
 @app.post("/api/voices/preview")
 async def voices_preview(payload: dict):
-    from fastapi.responses import Response
-
     import agent as agent_mod
 
     _, tone = agent_mod.resolve_tone(payload.get("tone"))
@@ -738,6 +799,13 @@ def main() -> int:
     if not PAGE.is_file():
         print(f"Missing {PAGE}", file=sys.stderr)
         return 1
+    if BEHIND_PROXY and not PANEL_PASSWORD:
+        print(
+            "BEHIND_PROXY=1 exposes the panel to the network, so it will not start "
+            "without PANEL_PASSWORD. Set PANEL_PASSWORD and try again.",
+            file=sys.stderr,
+        )
+        return 1
 
     ips = _lan_ips() if ALLOW_LAN else []
     ssl_args = {}
@@ -752,7 +820,10 @@ def main() -> int:
             scheme = "https"
 
     local = f"{scheme}://127.0.0.1:{PORT}"
-    print(f"Interface running at {local}")
+    if BEHIND_PROXY:
+        print(f"Interface running on port {PORT} behind a proxy. Login user: {PANEL_USER}")
+    else:
+        print(f"Interface running at {local}")
     if ALLOW_LAN:
         # Printed rather than guessed at: the address changes with the network,
         # and the one Windows reports first is often a VPN adapter.
@@ -768,8 +839,9 @@ def main() -> int:
             print("  refuse microphone access, so voice recording will not work.")
             print("  Install mkcert to fix that.")
         print("  ALLOW_LAN is on, so anyone on your network can drive this.")
-    print("Close this window to shut it down.")
-    threading.Timer(1.0, lambda: webbrowser.open(local)).start()
+    if not BEHIND_PROXY:
+        print("Close this window to shut it down.")
+        threading.Timer(1.0, lambda: webbrowser.open(local)).start()
     uvicorn.run(app, host=HOST, port=PORT, log_level="warning", **ssl_args)
     return 0
 

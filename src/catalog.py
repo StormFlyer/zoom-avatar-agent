@@ -324,12 +324,15 @@ def start_worker() -> dict:
     # cleanly (see stop_worker), so the notes are guaranteed by reconcile_notes()
     # instead of by a shutdown handler.
     creation = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    # `dev` watches the source files and restarts on change, which is what you
+    # want on a desk and wrong on a server, where AGENT_MODE=start is set.
+    mode = os.getenv("AGENT_MODE", "").strip() or "dev"
     # Run the agent on THIS interpreter, not via `uv run`. The interface is
     # already running inside the project venv, which has every dependency the
     # agent needs -- and that venv has no `uv` module of its own, so going back
     # through uv fails with "No module named uv".
     subprocess.Popen(  # noqa: S603 - fixed command, no user input
-        [sys.executable, "src/agent.py", "dev"],
+        [sys.executable, "src/agent.py", mode],
         cwd=str(_ROOT),
         stdout=log,
         stderr=subprocess.STDOUT,
