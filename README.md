@@ -43,8 +43,9 @@ worker for you.
 
 ## Before you start
 
-- **Python 3.10–3.12** and **[uv](https://docs.astral.sh/uv/)**. Built and tested on Windows;
-  the Python should run elsewhere, but only Windows has been tried.
+- **Python 3.10–3.12** and **[uv](https://docs.astral.sh/uv/)**. Built and tested on Windows.
+  The Docker/Linux route below has run end to end with dummy keys only; it has not
+  yet joined a real meeting.
 - Accounts and API keys for:
   - **[LiveKit Cloud](https://cloud.livekit.io)** — transport, plus the speech-to-text
     and language model, billed through LiveKit
@@ -230,6 +231,15 @@ uv run python src/send_to_meeting.py "https://us05web.zoom.us/j/1234567890?pwd=a
 
 Add `--dry-run` to see what would be sent without sending it.
 
+## Run it on a server (Docker / Coolify)
+
+The repo has a `Dockerfile` for running the panel and the agent on a server, with
+a password on the panel and everything you create kept in one `/data` volume.
+Step-by-step for [Coolify](https://coolify.io) is in
+[DEPLOY-COOLIFY.md](DEPLOY-COOLIFY.md). Checked so far with dummy keys only: the
+panel, login, uploads and knowledge-base indexing work in the container, and the
+agent starts. A real meeting from a server has not been tried.
+
 ## Reaching the panel from another device (experimental)
 
 The panel only answers on this machine by default, because it can start programs
@@ -264,6 +274,9 @@ All in `.env.local`. See `.env.example` for descriptions.
 | `NOTES_EMAIL_TO` | — | Where to email the notes |
 | `BRAND_NAME` | — | Your name in the panel header |
 | `ALLOW_LAN` | off | Serve the panel on your local network |
+| `BEHIND_PROXY` | off | Server mode: listen for a proxy, needs `PANEL_PASSWORD` |
+| `PANEL_USER`, `PANEL_PASSWORD` | `admin`, — | The panel login (server mode) |
+| `AGENT_MODE` | `dev` | `start` on a server |
 
 ## Making it yours
 
@@ -286,6 +299,8 @@ so your logo stays out of version control.
 | `src/export.py`, `src/mailer.py`, `src/delivery.py` | PDF/Word output and email |
 | `src/stop_agent.py` | Stops the agent and writes any missing notes |
 | `avatars/`, `knowledge/`, `meetings/`, `brand/` | Your files — all gitignored |
+| `Dockerfile`, `docker-entrypoint.sh` | Server image; see `DEPLOY-COOLIFY.md` |
+| `tests/` | Panel login checks: `uv run python -m unittest discover tests` |
 | `HANDOFF.md` | Design notes, gotchas and open problems |
 
 ## A note on disclosure
