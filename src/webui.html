@@ -298,6 +298,12 @@
         <div class="field">
           <label for="tone">Tone</label>
           <select id="tone"></select>
+          <label for="frame">Frame</label>
+          <select id="frame">
+            <option value="">Default</option>
+            <option value="portrait">Portrait (2:3)</option>
+            <option value="wide">Wide (square, the widest LemonSlice offers)</option>
+          </select>
           <p class="hint">How the avatar delivers its lines. A trained voice reads
             flat by default; this tells it to sound engaged. "Hear this voice"
             uses the tone selected here.</p>
@@ -818,6 +824,7 @@ function startFresh() {
   $("voiceFilter").value = "";
   fillVoices("");
   fillTones(d.tone || "");
+  $("frame").value = "";
   fillKnowledge("");
   $("persona").value = "";
   markPersonaSource("");
@@ -835,6 +842,7 @@ $("preset").addEventListener("change", () => {
   fillVoices(p.voiceId || "");
   fillKnowledge(p.knowledgeId || "");
   fillTones(p.tone || "");
+  $("frame").value = p.frame || "";
   $("persona").value = p.persona || "";
   markPersonaSource(p.persona ? (p.label || p.id) : "");
   $("presetName").value = p.label || "";
@@ -930,6 +938,7 @@ $("btnSavePreset").addEventListener("click", async () => {
         persona: $("persona").value.trim(),
         ownerName: $("ownerName").value.trim(),
         tone: $("tone").value,
+        frame: $("frame").value,
       }),
     });
     STATE.presets = r.presets;
@@ -1066,6 +1075,7 @@ $("btnGo").addEventListener("click", async () => {
     persona: $("persona").value.trim(),
     ownerName: $("ownerName").value.trim(),
     tone: $("tone").value,
+    frame: $("frame").value,
     requireAddress: $("requireAddress").checked,
     noAnnounce: !$("announce").checked,
   };

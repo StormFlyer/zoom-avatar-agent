@@ -186,6 +186,7 @@ async def state() -> JSONResponse:
             # left blank for the agent to guess at.
             "ownerName": os.getenv("OWNER_NAME", "").strip(),
             "tone": agent_mod.DEFAULT_TONE,
+            "frame": agent_mod.resolve_frame(""),
         },
     })
 
@@ -597,6 +598,7 @@ async def preset_save(payload: dict) -> JSONResponse:
         "agentPrompt": payload.get("agentPrompt") or "",
         "agentIdlePrompt": payload.get("agentIdlePrompt") or "",
         "tone": payload.get("tone") or "",
+        "frame": payload.get("frame") or "",
     }
     try:
         presets = catalog.save_preset(preset)
@@ -649,6 +651,7 @@ async def send(payload: dict) -> JSONResponse:
         ("--owner-name", "ownerName"),
         ("--preset", "preset"),
         ("--tone", "tone"),
+        ("--frame", "frame"),
     ):
         value = str(payload.get(key) or "").strip()
         if value:

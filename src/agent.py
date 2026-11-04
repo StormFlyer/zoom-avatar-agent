@@ -274,6 +274,21 @@ def _disclosure_instructions(bot_name: str, require_address: bool, owner: str = 
 # --------------------------------------------------------------------------- #
 
 
+# Avatar framing. LemonSlice renders only 2x3, 9x16 or 1x1 (no 16:9), so the
+# "wide" choice is the widest it offers: square. Meetings still letterbox it.
+FRAMES = {"portrait": "2x3", "wide": "1x1"}
+DEFAULT_FRAME = os.getenv("AVATAR_FRAME", "").strip().lower() or "portrait"
+
+
+def resolve_frame(name: str | None) -> str:
+    name = str(name or "").strip().lower()
+    if name in FRAMES:
+        return name
+    if name:
+        logger.warning("Unknown frame %r; using portrait (choices: %s)", name, ", ".join(FRAMES))
+    return DEFAULT_FRAME if DEFAULT_FRAME in FRAMES else "portrait"
+
+
 def _join_delay(meta: dict) -> float:
     """Settle time before the opening line: dispatch metadata, else env, else
     the default. Clamped -- a negative value would be nonsense and a very large
@@ -388,7 +403,13 @@ def _load_session_config(ctx: agents.JobContext) -> dict:
         "join_delay": _join_delay(meta),
         "owner_name": pick("ownerName", DEFAULT_OWNER_NAME),
         "tone": resolve_tone(pick("tone", DEFAULT_TONE))[0],
+        "frame": resolve_frame(pick("frame", "")),
     }
+    # A wide frame centre-crops the picture to a square, which cuts a portrait
+    # off at the chest; use the landscape picture when one is configured.
+    wide_image = os.getenv("AVATAR_IMAGE_WIDE", "").strip()
+    if resolved["frame"] == "wide" and wide_image and not meta.get("image"):
+        resolved["image"] = wide_image
 
     logger.info(
         "Session config: bot_name=%r image=%r voice_id=%s knowledge_id=%s "
@@ -554,7 +575,7 @@ def _prepare_image(data: bytes) -> Image.Image:
     img = Image.open(BytesIO(data))
     img = ImageOps.exif_transpose(img)
     img = img.convert("RGB")
-    img.thumbnail((640, 960))
+    img.thumbnail((960, 960))  # 640x960 for a portrait, 960x540 for a landscape
     return img
 
 
@@ -964,7 +985,13 @@ async def zoom_avatar(ctx: agents.JobContext) -> None:
     avatar_kwargs = {
         "agent_prompt": config["agent_prompt"],
         "agent_idle_prompt": config["agent_idle_prompt"],
+        # Not a named plugin argument; forwarded as-is into the LemonSlice
+        # session request.
+        "aspect_ratio": FRAMES[config["frame"]],
     }
+    if config["frame"] != "portrait":
+        # LemonSlice's automatic reframing only works at 2x3.
+        avatar_kwargs["edit_image"] = False
     avatar_image = await _load_avatar_image(config["image"])
     if avatar_image is not None:
         avatar = lemonslice.AvatarSession(agent_image=avatar_image, **avatar_kwargs)

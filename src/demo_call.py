@@ -106,12 +106,18 @@ def _metadata(max_seconds: int) -> str:
         "maxSeconds": max_seconds,
         "joinDelay": 1,
         "requireAddress": False,
+        "frame": _frame(),
     }
     if os.getenv("DEMO_PRESET", "").strip():
         meta["preset"] = os.getenv("DEMO_PRESET").strip()
-    if os.getenv("DEMO_IMAGE", "").strip():
-        meta["image"] = os.getenv("DEMO_IMAGE").strip()
+    if os.getenv("DEMO_IMAGE", "").strip() and meta["frame"] == "portrait":
+        meta["image"] = os.getenv("DEMO_IMAGE").strip()  # wide uses AVATAR_IMAGE_WIDE
     return json.dumps(meta)
+
+
+def _frame() -> str:
+    f = os.getenv("DEMO_FRAME", "").strip().lower() or os.getenv("AVATAR_FRAME", "").strip().lower()
+    return f if f in {"portrait", "wide"} else "portrait"
 
 
 def _make_token(room: str, identity: str, metadata: str) -> str:
@@ -158,7 +164,10 @@ async def call_page(k: str = "") -> HTMLResponse:
 
 @router.get("/call/poster")
 async def call_poster(k: str = "") -> FileResponse:
-    name = pathlib.Path(os.getenv("DEMO_IMAGE", "").strip()).name
+    img = os.getenv("DEMO_IMAGE", "").strip()
+    if _frame() == "wide" and os.getenv("AVATAR_IMAGE_WIDE", "").strip():
+        img = os.getenv("AVATAR_IMAGE_WIDE").strip()
+    name = pathlib.Path(img).name
     path = AVATAR_DIR / name if name else None
     if not enabled() or not _key_ok(k) or path is None or not path.is_file():
         raise HTTPException(404)
@@ -192,5 +201,6 @@ async def call_token(request: Request) -> JSONResponse:
     max_seconds = _int("DEMO_MAX_SECONDS", 600)
     token = _make_token(room, f"guest-{secrets.token_hex(4)}", _metadata(max_seconds))
     return JSONResponse(
-        {"url": os.environ["LIVEKIT_URL"], "token": token, "room": room, "maxSeconds": max_seconds}
+        {"url": os.environ["LIVEKIT_URL"], "token": token, "room": room,
+         "maxSeconds": max_seconds, "frame": _frame()}
     )

@@ -53,6 +53,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--tone",
         help="How the avatar should sound: off, warm, upbeat, excited, professional, calm.",
     )
+    p.add_argument("--frame", help="Avatar framing: portrait (2x3) or wide (square).")
     p.add_argument(
         "--require-address",
         action="store_true",
@@ -120,6 +121,8 @@ def _build_metadata(args: argparse.Namespace) -> dict:
         meta["persona"] = args.persona
     if args.tone:
         meta["tone"] = args.tone
+    if args.frame:
+        meta["frame"] = args.frame
     if args.require_address:
         meta["requireAddress"] = True
     if args.no_announce:

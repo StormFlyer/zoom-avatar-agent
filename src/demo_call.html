@@ -58,6 +58,7 @@ callBtn.onclick = async () => {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) { callBtn.disabled = false; say(data.error || "Couldn't start the call. Please try again."); return; }
 
+    if (data.frame === "wide") stage.style.aspectRatio = "1 / 1";
     room = new LivekitClient.Room({ adaptiveStream: true });
     room.on(LivekitClient.RoomEvent.TrackSubscribed, (track) => {
       const el = track.attach();

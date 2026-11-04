@@ -116,6 +116,17 @@ class AgentConfigTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             agent._load_session_config(ctx)
 
+    def test_frame_choice(self):
+        import agent
+
+        ctx = mock.Mock()
+        ctx.job.metadata = json.dumps({"mode": "browser", "frame": "wide"})
+        with mock.patch.dict(os.environ, {"AVATAR_IMAGE_WIDE": "tessa-wide.jpg"}):
+            cfg = agent._load_session_config(ctx)
+        self.assertEqual((cfg["frame"], cfg["image"]), ("wide", "tessa-wide.jpg"))
+        self.assertEqual(agent.FRAMES[cfg["frame"]], "1x1")
+        self.assertEqual(agent.resolve_frame("16x9"), "portrait")  # LemonSlice has no 16:9
+
 
 if __name__ == "__main__":
     unittest.main()
