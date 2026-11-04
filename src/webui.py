@@ -607,6 +607,34 @@ async def preset_save(payload: dict) -> JSONResponse:
     return JSONResponse({"presets": presets, "saved": pid})
 
 
+@app.get("/api/demo")
+async def demo_get() -> JSONResponse:
+    return JSONResponse(_demo_state())
+
+
+@app.post("/api/demo")
+async def demo_save(payload: dict) -> JSONResponse:
+    try:
+        catalog.set_demo_preset(str(payload.get("preset") or ""))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return JSONResponse(_demo_state())
+
+
+def _demo_state() -> dict:
+    """What the panel's "Demo call link" card shows."""
+    preset, image, reason = demo_call.resolve()
+    return {
+        "preset": catalog.get_demo_preset(),
+        "using": (preset or {}).get("id", ""),
+        "image": image.name if image else "",
+        "problem": reason,
+        "enabled": demo_call.enabled(),
+        "hasKey": bool(os.getenv("DEMO_KEY", "")),
+        "link": "/call?k=" + os.getenv("DEMO_KEY", "") if os.getenv("DEMO_KEY", "") else "/call",
+    }
+
+
 @app.delete("/api/presets/{pid}")
 async def preset_delete(pid: str) -> JSONResponse:
     return JSONResponse({"presets": catalog.delete_preset(pid)})

@@ -120,14 +120,44 @@ def save_preset(preset: dict) -> list[dict]:
         raise ValueError("preset needs an id")
     presets = [p for p in presets if str(p.get("id")) != pid]
     presets.insert(0, preset)
-    PRESETS_PATH.write_text(json.dumps({"presets": presets}, indent=2), encoding="utf-8")
+    _write_presets_file(presets=presets)
     return presets
 
 
 def delete_preset(pid: str) -> list[dict]:
     presets = [p for p in list_presets() if str(p.get("id")) != str(pid)]
-    PRESETS_PATH.write_text(json.dumps({"presets": presets}, indent=2), encoding="utf-8")
+    _write_presets_file(presets=presets)
     return presets
+
+
+def _read_presets_file() -> dict:
+    try:
+        data = json.loads(PRESETS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_presets_file(**changes) -> None:
+    """Rewrite presets.json, keeping keys we aren't changing (e.g. "demo")."""
+    data = _read_presets_file()
+    data.update(changes)
+    data.setdefault("presets", [])
+    PRESETS_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def get_demo_preset() -> str:
+    """Id of the preset the public /call demo uses ("" if none chosen in the panel)."""
+    demo = _read_presets_file().get("demo")
+    return str(demo.get("preset") or "").strip() if isinstance(demo, dict) else ""
+
+
+def set_demo_preset(pid: str) -> str:
+    pid = str(pid or "").strip()
+    if pid and pid not in {str(p.get("id")) for p in list_presets()}:
+        raise ValueError(f"no preset called {pid!r}")
+    _write_presets_file(demo={"preset": pid})
+    return pid
 
 
 # --------------------------------------------------------------------------- #
