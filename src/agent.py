@@ -27,7 +27,7 @@ import aiohttp
 from dotenv import load_dotenv
 from PIL import Image, ImageOps
 
-from livekit import agents
+from livekit import agents, rtc
 from livekit.agents import (
     Agent,
     AgentServer,
@@ -274,6 +274,21 @@ def _disclosure_instructions(bot_name: str, require_address: bool, owner: str = 
 # --------------------------------------------------------------------------- #
 
 
+# Avatar framing. LemonSlice renders only 2x3, 9x16 or 1x1 (no 16:9), so the
+# "wide" choice is the widest it offers: square. Meetings still letterbox it.
+FRAMES = {"portrait": "2x3", "wide": "1x1"}
+DEFAULT_FRAME = os.getenv("AVATAR_FRAME", "").strip().lower() or "portrait"
+
+
+def resolve_frame(name: str | None) -> str:
+    name = str(name or "").strip().lower()
+    if name in FRAMES:
+        return name
+    if name:
+        logger.warning("Unknown frame %r; using portrait (choices: %s)", name, ", ".join(FRAMES))
+    return DEFAULT_FRAME if DEFAULT_FRAME in FRAMES else "portrait"
+
+
 def _join_delay(meta: dict) -> float:
     """Settle time before the opening line: dispatch metadata, else env, else
     the default. Clamped -- a negative value would be nonsense and a very large
@@ -360,11 +375,20 @@ def _load_session_config(ctx: agents.JobContext) -> dict:
                 return val
         return default
 
+    # "browser" = the public demo page (/call): the caller is in this LiveKit
+    # room directly, so there is no meeting to join. See webui.demo_token().
+    mode = "browser" if str(meta.get("mode") or "").strip().lower() == "browser" else "meeting"
     meeting_url = str(meta.get("meeting_url") or "").strip()
-    if not meeting_url:
+    if mode == "meeting" and not meeting_url:
         raise ValueError("meeting_url must be provided in job metadata")
+    try:
+        max_seconds = max(0, int(meta.get("maxSeconds") or 0))
+    except (TypeError, ValueError):
+        max_seconds = 0
 
     resolved = {
+        "mode": mode,
+        "max_seconds": max_seconds,
         "meeting_url": meeting_url,
         "bot_name": str(meta.get("bot_name") or "AI Assistant").strip(),
         "listen_to_meeting_chat": bool(meta.get("listen_to_meeting_chat", True)),
@@ -379,7 +403,13 @@ def _load_session_config(ctx: agents.JobContext) -> dict:
         "join_delay": _join_delay(meta),
         "owner_name": pick("ownerName", DEFAULT_OWNER_NAME),
         "tone": resolve_tone(pick("tone", DEFAULT_TONE))[0],
+        "frame": resolve_frame(pick("frame", "")),
     }
+    # A wide frame centre-crops the picture to a square, which cuts a portrait
+    # off at the chest; use the landscape picture when one is configured.
+    wide_image = os.getenv("AVATAR_IMAGE_WIDE", "").strip()
+    if resolved["frame"] == "wide" and wide_image and not meta.get("image"):
+        resolved["image"] = wide_image
 
     logger.info(
         "Session config: bot_name=%r image=%r voice_id=%s knowledge_id=%s "
@@ -545,7 +575,7 @@ def _prepare_image(data: bytes) -> Image.Image:
     img = Image.open(BytesIO(data))
     img = ImageOps.exif_transpose(img)
     img = img.convert("RGB")
-    img.thumbnail((640, 960))
+    img.thumbnail((960, 960))  # 640x960 for a portrait, 960x540 for a landscape
     return img
 
 
@@ -955,7 +985,13 @@ async def zoom_avatar(ctx: agents.JobContext) -> None:
     avatar_kwargs = {
         "agent_prompt": config["agent_prompt"],
         "agent_idle_prompt": config["agent_idle_prompt"],
+        # Not a named plugin argument; forwarded as-is into the LemonSlice
+        # session request.
+        "aspect_ratio": FRAMES[config["frame"]],
     }
+    if config["frame"] != "portrait":
+        # LemonSlice's automatic reframing only works at 2x3.
+        avatar_kwargs["edit_image"] = False
     avatar_image = await _load_avatar_image(config["image"])
     if avatar_image is not None:
         avatar = lemonslice.AvatarSession(agent_image=avatar_image, **avatar_kwargs)
@@ -973,18 +1009,24 @@ async def zoom_avatar(ctx: agents.JobContext) -> None:
 
     await avatar.start(session, room=ctx.room)
 
-    await avatar.join_meeting(
-        config["meeting_url"],
-        bot_name=config["bot_name"],
-        listen_to_meeting_chat=config["listen_to_meeting_chat"],
-    )
+    browser = config["mode"] == "browser"
+    if browser:
+        # Demo call: the visitor is a participant in this room, so the default
+        # RoomOptions (room audio in, avatar audio/video out) are what we want.
+        room_options = None
+    else:
+        await avatar.join_meeting(
+            config["meeting_url"],
+            bot_name=config["bot_name"],
+            listen_to_meeting_chat=config["listen_to_meeting_chat"],
+        )
     # Must use the avatar's own room options in meeting mode. Once join_meeting()
     # has run this returns RoomOptions(audio_input=False, audio_output=False):
     # meeting audio is fed straight into STT, bypassing LiveKit room audio. That
     # is also why there is no noise_cancellation.BVC() here as in the browser app
     # — there is no room audio input for it to filter. Extra kwargs are forwarded
     # to RoomOptions if other room-level options are ever needed.
-    room_options = avatar.room_options()
+        room_options = avatar.room_options()
 
     # Prefer vector RAG (per-turn retrieval); fall back to injecting raw text.
     rag_index = _load_rag_index(config["knowledge_id"])
@@ -1000,17 +1042,20 @@ async def zoom_avatar(ctx: agents.JobContext) -> None:
     # Appended to whatever persona is in use, so every preset gets it.
     instructions += _capability_note(
         config["owner_name"],
-        notes_enabled=True,
-        emailed_to=bool(mailer.recipients()),
+        notes_enabled=not browser,
+        emailed_to=(not browser) and bool(mailer.recipients()),
     )
 
-    notes = notes_mod.MeetingNotes(
-        MEETINGS_DIR,
-        config["meeting_url"],
-        config["bot_name"],
-        session_id=getattr(ctx.job, "id", "") or "",
-    )
-    logger.info("Taking notes to %s", notes.transcript_path)
+    # Public demo calls are with strangers: no transcript, recap or email.
+    notes = None
+    if not browser:
+        notes = notes_mod.MeetingNotes(
+            MEETINGS_DIR,
+            config["meeting_url"],
+            config["bot_name"],
+            session_id=getattr(ctx.job, "id", "") or "",
+        )
+        logger.info("Taking notes to %s", notes.transcript_path)
 
     assistant = MeetingAssistant(
         instructions,
@@ -1030,7 +1075,8 @@ async def zoom_avatar(ctx: agents.JobContext) -> None:
         text = getattr(item, "text_content", None) or ""
         if isinstance(text, list):
             text = " ".join(str(x) for x in text)
-        notes.add("avatar", text)
+        if notes is not None:
+            notes.add("avatar", text)
         # The avatar has just spoken, so the follow-up window opens here.
         assistant.note_spoke()
 
@@ -1060,13 +1106,33 @@ async def zoom_avatar(ctx: agents.JobContext) -> None:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Recap delivery failed: %s", exc)
 
-    ctx.add_shutdown_callback(_write_recap)
+    if not browser:
+        ctx.add_shutdown_callback(_write_recap)
 
-    await session.start(
-        agent=assistant,
-        room=ctx.room,
-        room_options=room_options,
-    )
+    start_kwargs = {"room_options": room_options} if room_options is not None else {}
+    await session.start(agent=assistant, room=ctx.room, **start_kwargs)
+
+    if browser:
+        # Hard cap on a demo call, enforced here because the visitor's browser
+        # cannot be trusted to hang up. The panel also deletes the room later.
+        if config["max_seconds"]:
+            async def _time_limit() -> None:
+                await asyncio.sleep(config["max_seconds"])
+                logger.info("Demo call reached its %ss limit; ending.", config["max_seconds"])
+                ctx.shutdown(reason="demo time limit")
+
+            limiter = asyncio.create_task(_time_limit())
+
+            async def _cancel_limit(*_args) -> None:
+                limiter.cancel()
+
+            ctx.add_shutdown_callback(_cancel_limit)
+
+        # Visitor hung up (or closed the tab): end the job, don't sit idle.
+        @ctx.room.on("participant_disconnected")
+        def _on_left(participant) -> None:
+            if participant.kind != rtc.ParticipantKind.PARTICIPANT_KIND_AGENT:
+                ctx.shutdown(reason="caller left")
 
     async def _leave_meeting(*_args) -> None:
         """Take the avatar out of the meeting.
@@ -1083,7 +1149,8 @@ async def zoom_avatar(ctx: agents.JobContext) -> None:
         except Exception as exc:  # noqa: BLE001 - shutdown must not raise
             logger.warning("Could not leave the meeting cleanly: %s", exc)
 
-    ctx.add_shutdown_callback(_leave_meeting)
+    if not browser:
+        ctx.add_shutdown_callback(_leave_meeting)
 
     async def _watch_for_stop() -> None:
         """Wind up when the interface asks us to.
@@ -1094,7 +1161,8 @@ async def zoom_avatar(ctx: agents.JobContext) -> None:
         """
         while True:
             await asyncio.sleep(0.5)
-            await _drain_whispers()
+            if not browser:  # whispers are for the meeting, not demo callers
+                await _drain_whispers()
             if STOP_REQUEST.exists():
                 logger.info("Stop requested; leaving the meeting and writing notes.")
                 ctx.shutdown(reason="stopped from the interface")
@@ -1137,7 +1205,8 @@ async def zoom_avatar(ctx: agents.JobContext) -> None:
             say_now = mode == "say"
 
             # In the transcript either way, so the recap shows what was steered.
-            notes.add("room", text, speaker="sent in by the owner")
+            if notes is not None:
+                notes.add("room", text, speaker="sent in by the owner")
 
             if say_now:
                 logger.info("Whisper (say now): %r", text[:120])

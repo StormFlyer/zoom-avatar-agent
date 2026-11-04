@@ -111,3 +111,13 @@ After it, press **Start agent** again.
   for 2 GB or more of free memory.
 - **No ports to open** other than 80 and 443, which Coolify already uses. The agent
   only makes outgoing connections.
+
+## Public demo call page (optional)
+
+`https://<your domain>/call` lets anyone with the link talk to the avatar in the
+browser. Set `DEMO_ENABLED=1` and, ideally, `DEMO_KEY` (then share
+`/call?k=<key>`; change the key to revoke). Point `DEMO_PRESET` at the preset
+holding the persona, voice and knowledge base, and `DEMO_IMAGE` at a file in
+`/data/avatars`. Cost guards: `DEMO_MAX_SECONDS`, `DEMO_MAX_CONCURRENT`,
+`DEMO_CALLS_PER_IP`, `DEMO_IP_WINDOW_SECONDS` (see `.env.example`). Demo calls
+keep no transcript and send no recap email. The worker must be running.

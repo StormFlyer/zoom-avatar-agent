@@ -48,6 +48,7 @@ from fastapi.responses import (  # noqa: E402
 )
 
 import catalog  # noqa: E402
+import demo_call  # noqa: E402
 import rag  # noqa: E402
 import voices as voices_mod  # noqa: E402
 
@@ -80,6 +81,7 @@ MAX_IMAGE_BYTES = 25 * 1024 * 1024
 MAX_DOC_BYTES = 50 * 1024 * 1024
 
 app = FastAPI(title="Zoom Avatar Generator")
+app.include_router(demo_call.router)  # public /call demo; off unless DEMO_ENABLED=1
 
 
 def _login_ok(header: str) -> bool:
@@ -108,6 +110,7 @@ async def require_login(request: Request, call_next):
     if (
         not PANEL_PASSWORD
         or request.url.path == "/healthz"
+        or request.url.path in demo_call.PUBLIC_PATHS
         or _login_ok(request.headers.get("authorization", ""))
     ):
         return await call_next(request)
@@ -183,6 +186,7 @@ async def state() -> JSONResponse:
             # left blank for the agent to guess at.
             "ownerName": os.getenv("OWNER_NAME", "").strip(),
             "tone": agent_mod.DEFAULT_TONE,
+            "frame": agent_mod.resolve_frame(""),
         },
     })
 
@@ -594,6 +598,7 @@ async def preset_save(payload: dict) -> JSONResponse:
         "agentPrompt": payload.get("agentPrompt") or "",
         "agentIdlePrompt": payload.get("agentIdlePrompt") or "",
         "tone": payload.get("tone") or "",
+        "frame": payload.get("frame") or "",
     }
     try:
         presets = catalog.save_preset(preset)
@@ -646,6 +651,7 @@ async def send(payload: dict) -> JSONResponse:
         ("--owner-name", "ownerName"),
         ("--preset", "preset"),
         ("--tone", "tone"),
+        ("--frame", "frame"),
     ):
         value = str(payload.get(key) or "").strip()
         if value:
