@@ -51,12 +51,12 @@ async function hangUp(msg) {
 }
 
 callBtn.onclick = async () => {
-  callBtn.disabled = true; say("Connecting…");
+  callBtn.disabled = true; callBtn.style.display = "none"; endBtn.style.display = "inline-block"; say("Connecting…");
   try {
     const res = await fetch("/api/call/token", { method: "POST",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify({ k }) });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) { callBtn.disabled = false; say(data.error || "Couldn't start the call. Please try again."); return; }
+    if (!res.ok) { callBtn.disabled = false; callBtn.style.display = ""; endBtn.style.display = "none"; say(data.error || "Couldn't start the call. Please try again."); return; }
 
     if (data.frame === "wide") stage.style.aspectRatio = "1 / 1";
     room = new LivekitClient.Room({ adaptiveStream: true });
@@ -69,7 +69,7 @@ callBtn.onclick = async () => {
     await room.connect(data.url, data.token);
     await room.localParticipant.setMicrophoneEnabled(true);
     await room.startAudio();
-    callBtn.style.display = "none"; endBtn.style.display = "";
+    callBtn.style.display = "none"; endBtn.style.display = "inline-block";
     say("Tessa is joining…");
     timer = setTimeout(() => hangUp("That's the end of the demo call. Thanks!"), (data.maxSeconds + 5) * 1000);
   } catch (e) {
