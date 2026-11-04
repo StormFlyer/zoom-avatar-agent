@@ -8,26 +8,92 @@
 <style>
   :root { color-scheme: dark; }
   body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; align-items: center;
-         justify-content: center; gap: 20px; background: #0b0d12; color: #eef0f4;
-         font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 16px; box-sizing: border-box; }
-  .brand { font-weight: 600; letter-spacing: .04em; opacity: .8; }
+         justify-content: center; gap: 20px; background: transparent; color: #eef0f4;
+         font-family: "Source Sans 3 Variable", "Source Sans 3", ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 16px; box-sizing: border-box; }
+  .brand { font-family: "Inter Tight Variable", "Inter Tight", ui-sans-serif, system-ui, sans-serif; font-weight: 600; letter-spacing: .04em; opacity: .8; }
   .stage { width: min(420px, 92vw); aspect-ratio: 2 / 3; border-radius: 18px; overflow: hidden;
-           background: #161a22 center / cover no-repeat; position: relative; box-shadow: 0 10px 40px #0008; }
+           background: #0a1836 center / cover no-repeat; position: relative; box-shadow: 0 10px 40px #0008; border: 1px solid rgb(255 255 255 / .09); }
   .stage video { width: 100%; height: 100%; object-fit: cover; display: block; }
   button { font: inherit; font-size: 1.05rem; border: 0; border-radius: 999px; padding: 14px 32px; cursor: pointer; }
-  #call { background: #2e7dff; color: #fff; }
+  #call { background: #4481eb; color: #fff; }
   #end { background: #e5484d; color: #fff; display: none; }
   button:disabled { opacity: .5; cursor: default; }
   #status { min-height: 1.4em; opacity: .8; text-align: center; }
+  html { min-height: 100%; background: radial-gradient(60% 50% at 80% 0%, rgb(68 129 235 / .22), transparent 70%),
+         radial-gradient(50% 45% at 10% 100%, rgb(5 190 254 / .12), transparent 70%), linear-gradient(160deg, #0a1a44 0%, #040e29 60%) fixed #040e29; }
+  #neural-bg { position: fixed; inset: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; }
+  #status { text-shadow: 0 1px 6px #040e29; }
   .fine { font-size: .8rem; opacity: .55; max-width: 420px; text-align: center; }
 </style>
 </head>
 <body>
+  <canvas id="neural-bg" aria-hidden="true"></canvas>
   <div class="brand">SentientFlow</div>
   <div class="stage" id="stage"></div>
   <div id="status">Talk to Tessa, face to face.</div>
   <div><button id="call">Call Tessa</button><button id="end">End call</button></div>
   <div class="fine">Tessa is an AI. Your microphone is used only during the call. Calls end automatically after a few minutes.</div>
+<script>
+// Neural-network backdrop ported from the SentientFlow website (NeuralBackground.astro). Faint, behind content,
+// pauses when the tab is hidden, still frame under prefers-reduced-motion, DPR capped at 1.5, fewer nodes on mobile.
+(() => {
+  const canvas = document.getElementById("neural-bg");
+  const ctx = canvas && canvas.getContext("2d");
+  if (!ctx) return;
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const LINK = 170, FADE = 0.6;
+  let w = 0, h = 0, nodes = [], raf = 0, last = 0;
+  const build = () => {
+    const dpr = Math.min(devicePixelRatio || 1, 1.5);
+    w = innerWidth; h = innerHeight;
+    canvas.width = w * dpr; canvas.height = h * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const count = Math.round(Math.min(w < 640 ? 40 : 110, (w * h) / 10000));
+    nodes = Array.from({ length: count }, () => ({
+      x: Math.random() * w, y: Math.random() * h,
+      vx: (Math.random() - 0.5) * 0.12, vy: (Math.random() - 0.5) * 0.12,
+      r: 0.8 + Math.random() * 1.4,
+    }));
+  };
+  const draw = () => {
+    ctx.clearRect(0, 0, w, h);
+    const pts = nodes.map(n => ({ x: n.x, y: n.y, r: n.r,
+      a: 0.25 + 0.75 * (1 - Math.min(1, Math.abs(n.y - h / 2) / (h * 0.7))) }));
+    ctx.lineWidth = 0.8;
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i];
+      for (let j = i + 1; j < pts.length; j++) {
+        const q = pts[j], dx = p.x - q.x, dy = p.y - q.y, d2 = dx * dx + dy * dy;
+        const reach = LINK * (0.7 + 0.3 * Math.min(p.a, q.a));
+        if (d2 > reach * reach) continue;
+        const a = (1 - Math.sqrt(d2) / reach) * 0.45 * Math.min(p.a, q.a) * FADE;
+        ctx.strokeStyle = `rgba(68,129,235,${a})`;
+        ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+      }
+    }
+    for (const p of pts) {
+      ctx.fillStyle = `rgba(5,190,254,${0.85 * p.a * FADE})`;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+    }
+  };
+  const step = (t) => {
+    const dt = Math.min(50, t - (last || t)); last = t;
+    for (const n of nodes) {
+      n.x += n.vx * dt * 0.06; n.y += n.vy * dt * 0.06;
+      if (n.x < 0 || n.x > w) n.vx *= -1;
+      if (n.y < 0 || n.y > h) n.vy *= -1;
+    }
+    draw();
+    raf = requestAnimationFrame(step);
+  };
+  const start = () => { if (!raf && !reduced && !document.hidden) { last = 0; raf = requestAnimationFrame(step); } };
+  const stop = () => { cancelAnimationFrame(raf); raf = 0; };
+  build(); draw(); start();
+  let rt = 0;
+  addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { build(); draw(); }, 150); });
+  document.addEventListener("visibilitychange", () => (document.hidden ? stop() : start()));
+})();
+</script>
 <script src="https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.min.js"></script>
 <script>
 const k = new URLSearchParams(location.search).get("k") || "";
