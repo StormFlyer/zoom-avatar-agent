@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 import os
 import pathlib
 import secrets
@@ -36,6 +37,7 @@ AVATAR_DIR = _ROOT / "avatars"
 # Routes that skip the panel login. Everything else stays behind PANEL_PASSWORD.
 PUBLIC_PATHS = {"/call", "/call/poster", "/api/call/token"}
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _lock = threading.Lock()
@@ -164,14 +166,21 @@ async def call_page(k: str = "") -> HTMLResponse:
 
 @router.get("/call/poster")
 async def call_poster(k: str = "") -> FileResponse:
+    path = _demo_image_path()
+    if not enabled() or not _key_ok(k) or path is None:
+        raise HTTPException(404)
+    return FileResponse(path)
+
+
+def _demo_image_path() -> pathlib.Path | None:
+    """The demo's face, or None if it isn't set or isn't in avatars/.
+    Without it the agent would fall back to the first face in the folder."""
     img = os.getenv("DEMO_IMAGE", "").strip()
     if _frame() == "wide" and os.getenv("AVATAR_IMAGE_WIDE", "").strip():
         img = os.getenv("AVATAR_IMAGE_WIDE").strip()
     name = pathlib.Path(img).name
     path = AVATAR_DIR / name if name else None
-    if not enabled() or not _key_ok(k) or path is None or not path.is_file():
-        raise HTTPException(404)
-    return FileResponse(path)
+    return path if path is not None and path.is_file() else None
 
 
 @router.post("/api/call/token")
@@ -184,6 +193,9 @@ async def call_token(request: Request) -> JSONResponse:
         raise HTTPException(404)
     missing = [k for k in ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET") if not os.getenv(k)]
     if missing:
+        return JSONResponse({"error": "Calls are not set up on this server."}, status_code=503)
+    if _demo_image_path() is None:
+        logger.warning("Demo call refused: DEMO_IMAGE (or AVATAR_IMAGE_WIDE) is not a file in avatars/")
         return JSONResponse({"error": "Calls are not set up on this server."}, status_code=503)
 
     room = f"demo-{secrets.token_hex(8)}"

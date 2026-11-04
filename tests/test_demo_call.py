@@ -8,6 +8,7 @@ import json
 import os
 import pathlib
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -25,6 +26,7 @@ LK = {
     "DEMO_ENABLED": "1",
     "DEMO_KEY": "",
     "BEHIND_PROXY": "",
+    "DEMO_IMAGE": "demo.jpg",
 }
 
 
@@ -41,6 +43,12 @@ class DemoCallTests(unittest.TestCase):
         self.pw = mock.patch.multiple(webui, PANEL_USER="admin", PANEL_PASSWORD="s3cret")
         self.pw.start()
         self.addCleanup(self.pw.stop)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        (pathlib.Path(tmp.name) / "demo.jpg").write_bytes(b"x")
+        self.dir = mock.patch.object(demo_call, "AVATAR_DIR", pathlib.Path(tmp.name))
+        self.dir.start()
+        self.addCleanup(self.dir.stop)
 
     def env(self, **extra):
         return mock.patch.dict(os.environ, {**LK, **extra})
@@ -53,6 +61,12 @@ class DemoCallTests(unittest.TestCase):
         with self.env(DEMO_ENABLED=""):
             self.assertEqual(self.client.get("/call").status_code, 404)
             self.assertEqual(self.token().status_code, 404)
+
+    def test_refuses_without_demo_face(self):
+        # Otherwise the agent quietly uses the first face in avatars/.
+        for img in ("", "missing.jpg"):
+            with self.env(DEMO_IMAGE=img):
+                self.assertEqual(self.token().status_code, 503)
 
     def test_page_is_public_but_panel_is_not(self):
         with self.env():
