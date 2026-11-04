@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Call Tessa · SentientFlow</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; align-items: center;
+         justify-content: center; gap: 20px; background: #0b0d12; color: #eef0f4;
+         font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 16px; box-sizing: border-box; }
+  .brand { font-weight: 600; letter-spacing: .04em; opacity: .8; }
+  .stage { width: min(420px, 92vw); aspect-ratio: 2 / 3; border-radius: 18px; overflow: hidden;
+           background: #161a22 center / cover no-repeat; position: relative; box-shadow: 0 10px 40px #0008; }
+  .stage video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  button { font: inherit; font-size: 1.05rem; border: 0; border-radius: 999px; padding: 14px 32px; cursor: pointer; }
+  #call { background: #2e7dff; color: #fff; }
+  #end { background: #e5484d; color: #fff; display: none; }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { min-height: 1.4em; opacity: .8; text-align: center; }
+  .fine { font-size: .8rem; opacity: .55; max-width: 420px; text-align: center; }
+</style>
+</head>
+<body>
+  <div class="brand">SentientFlow</div>
+  <div class="stage" id="stage"></div>
+  <div id="status">Talk to Tessa, face to face.</div>
+  <div><button id="call">Call Tessa</button><button id="end">End call</button></div>
+  <div class="fine">Tessa is an AI. Your microphone is used only during the call. Calls end automatically after a few minutes.</div>
+<script src="https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.min.js"></script>
+<script>
+const k = new URLSearchParams(location.search).get("k") || "";
+const stage = document.getElementById("stage");
+const status = document.getElementById("status");
+const callBtn = document.getElementById("call");
+const endBtn = document.getElementById("end");
+const poster = new Image();
+poster.onload = () => { stage.style.backgroundImage = `url(${poster.src})`; };
+poster.src = "/call/poster?k=" + encodeURIComponent(k);
+let room = null, timer = null;
+
+function say(t) { status.textContent = t; }
+
+async function hangUp(msg) {
+  clearTimeout(timer);
+  if (room) { const r = room; room = null; await r.disconnect(); }
+  stage.querySelectorAll("video,audio").forEach(el => el.remove());
+  endBtn.style.display = "none"; callBtn.style.display = ""; callBtn.disabled = false;
+  say(msg || "Call ended. Thanks for talking to Tessa.");
+}
+
+callBtn.onclick = async () => {
+  callBtn.disabled = true; say("Connecting…");
+  try {
+    const res = await fetch("/api/call/token", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ k }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { callBtn.disabled = false; say(data.error || "Couldn't start the call. Please try again."); return; }
+
+    room = new LivekitClient.Room({ adaptiveStream: true });
+    room.on(LivekitClient.RoomEvent.TrackSubscribed, (track) => {
+      const el = track.attach();
+      if (track.kind === "video") { stage.querySelectorAll("video").forEach(v => v.remove()); say("You're talking to Tessa."); }
+      stage.appendChild(el);
+    });
+    room.on(LivekitClient.RoomEvent.Disconnected, () => { if (room) hangUp(); });
+    await room.connect(data.url, data.token);
+    await room.localParticipant.setMicrophoneEnabled(true);
+    await room.startAudio();
+    callBtn.style.display = "none"; endBtn.style.display = "";
+    say("Tessa is joining…");
+    timer = setTimeout(() => hangUp("That's the end of the demo call. Thanks!"), (data.maxSeconds + 5) * 1000);
+  } catch (e) {
+    console.error(e);
+    await hangUp(e && e.name === "NotAllowedError"
+      ? "Tessa needs your microphone. Please allow it and try again."
+      : "Couldn't start the call. Please try again.");
+  }
+};
+endBtn.onclick = () => hangUp();
+</script>
+</body>
+</html>
