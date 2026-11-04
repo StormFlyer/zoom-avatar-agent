@@ -780,10 +780,12 @@ function fillDemo(d) {
   let info = d.preset
     ? `Current demo preset: ${d.preset}${d.image ? " (face " + d.image + ")" : ""}.`
     : (d.using ? `No preset chosen here; using the old DEMO_PRESET setting (${d.using}).` : "No demo preset chosen.");
-  info += ` Shareable link: ${link}`;
-  if (!d.enabled) info += " (demo is switched off: DEMO_ENABLED is not set)";
-  if (d.problem) info += ` Calls are refused right now: ${d.problem}.`;
-  $("demoInfo").textContent = info;
+  let after = "";
+  if (!d.enabled) after += " (demo is switched off: DEMO_ENABLED is not set)";
+  if (d.problem) after += ` Calls are refused right now: ${d.problem}.`;
+  const a = document.createElement("a");
+  a.href = link; a.target = "_blank"; a.rel = "noopener"; a.textContent = link;
+  $("demoInfo").replaceChildren(info + " Shareable link: ", a, after);
 }
 
 async function loadDemo() {
