@@ -8,6 +8,7 @@ import json
 import os
 import pathlib
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -15,6 +16,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
 from starlette.testclient import TestClient  # noqa: E402
 
+import catalog  # noqa: E402
 import demo_call  # noqa: E402
 import webui  # noqa: E402
 
@@ -25,6 +27,7 @@ LK = {
     "DEMO_ENABLED": "1",
     "DEMO_KEY": "",
     "BEHIND_PROXY": "",
+    "DEMO_IMAGE": "demo.jpg",
 }
 
 
@@ -41,6 +44,21 @@ class DemoCallTests(unittest.TestCase):
         self.pw = mock.patch.multiple(webui, PANEL_USER="admin", PANEL_PASSWORD="s3cret")
         self.pw.start()
         self.addCleanup(self.pw.stop)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        (pathlib.Path(tmp.name) / "demo.jpg").write_bytes(b"x")
+        self.dir = mock.patch.object(demo_call, "AVATAR_DIR", pathlib.Path(tmp.name))
+        self.dir.start()
+        self.addCleanup(self.dir.stop)
+        self.presets = pathlib.Path(tmp.name) / "presets.json"
+        self.presets.write_text(json.dumps({"presets": [
+            {"id": "tessa", "label": "Tessa", "image": "tessa.jpg", "frame": "wide"},
+            {"id": "nopic", "label": "No pic", "image": "gone.jpg"},
+        ]}))
+        (pathlib.Path(tmp.name) / "tessa.jpg").write_bytes(b"TESSA")
+        pp = mock.patch.object(catalog, "PRESETS_PATH", self.presets)
+        pp.start()
+        self.addCleanup(pp.stop)
 
     def env(self, **extra):
         return mock.patch.dict(os.environ, {**LK, **extra})
@@ -53,6 +71,12 @@ class DemoCallTests(unittest.TestCase):
         with self.env(DEMO_ENABLED=""):
             self.assertEqual(self.client.get("/call").status_code, 404)
             self.assertEqual(self.token().status_code, 404)
+
+    def test_refuses_without_demo_face(self):
+        # Otherwise the agent quietly uses the first face in avatars/.
+        for img in ("", "missing.jpg"):
+            with self.env(DEMO_IMAGE=img):
+                self.assertEqual(self.token().status_code, 503)
 
     def test_page_is_public_but_panel_is_not(self):
         with self.env():
@@ -101,6 +125,55 @@ class DemoCallTests(unittest.TestCase):
     def test_refuses_without_livekit_credentials(self):
         with self.env(LIVEKIT_API_SECRET=""):
             self.assertEqual(self.token().status_code, 503)
+
+
+class DemoPresetInPanelTests(DemoCallTests):
+    """The demo avatar is picked in the panel, not in env."""
+
+    AUTH = {"Authorization": "Basic " + base64.b64encode(b"admin:s3cret").decode()}
+
+    def env(self, **extra):
+        return mock.patch.dict(os.environ, {**LK, "DEMO_IMAGE": "", "DEMO_PRESET": "", **extra})
+
+    def test_panel_save_and_read_needs_login(self):
+        with self.env():
+            self.assertEqual(self.client.get("/api/demo").status_code, 401)
+            self.assertEqual(self.client.post("/api/demo", json={"preset": "tessa"}).status_code, 401)
+            self.assertEqual(self.client.get("/api/demo", headers=self.AUTH).json()["preset"], "")
+            r = self.client.post("/api/demo", json={"preset": "tessa"}, headers=self.AUTH)
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual((r.json()["preset"], r.json()["image"]), ("tessa", "tessa.jpg"))
+            self.assertEqual(self.client.get("/api/demo", headers=self.AUTH).json()["preset"], "tessa")
+            self.assertEqual(
+                self.client.post("/api/demo", json={"preset": "nope"}, headers=self.AUTH).status_code, 400)
+        # Saving a preset afterwards keeps the demo choice.
+        catalog.save_preset({"id": "other", "label": "Other"})
+        self.assertEqual(catalog.get_demo_preset(), "tessa")
+
+    def test_token_and_poster_use_preset_image(self):
+        catalog.set_demo_preset("tessa")
+        with self.env(DEMO_IMAGE="demo.jpg", DEMO_PRESET="nopic"):  # panel choice beats env
+            r = self.token().json()
+            self.assertEqual(self.client.get("/call/poster").content, b"TESSA")
+        meta = json.loads(claims(r["token"])["roomConfig"]["agents"][0]["metadata"])
+        self.assertEqual((meta["preset"], meta["image"], meta["frame"]), ("tessa", "tessa.jpg", "wide"))
+
+    def test_refuses_when_none_chosen_or_face_missing(self):
+        with self.env():
+            self.assertEqual(self.token().status_code, 503)
+            self.assertEqual(self.client.get("/call/poster").status_code, 404)
+        catalog.set_demo_preset("nopic")
+        with self.env():
+            self.assertEqual(self.token().status_code, 503)
+
+    # Inherited env-based tests need a face; give them the panel choice.
+    def setUp(self):
+        super().setUp()
+        if not self._testMethodName.startswith(("test_panel", "test_token_and", "test_refuses_when")):
+            catalog.set_demo_preset("tessa")
+
+    def test_refuses_without_demo_face(self):
+        pass  # covered by test_refuses_when_none_chosen_or_face_missing
 
 
 class AgentConfigTests(unittest.TestCase):

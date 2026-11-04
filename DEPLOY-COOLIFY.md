@@ -116,8 +116,10 @@ After it, press **Start agent** again.
 
 `https://<your domain>/call` lets anyone with the link talk to the avatar in the
 browser. Set `DEMO_ENABLED=1` and, ideally, `DEMO_KEY` (then share
-`/call?k=<key>`; change the key to revoke). Point `DEMO_PRESET` at the preset
-holding the persona, voice and knowledge base, and `DEMO_IMAGE` at a file in
-`/data/avatars`. Cost guards: `DEMO_MAX_SECONDS`, `DEMO_MAX_CONCURRENT`,
+`/call?k=<key>`; change the key to revoke). Then pick which saved preset
+answers in the panel's "Demo call link" card and press Save; its face, frame,
+persona, voice and knowledge base are used. Until one is picked, calls are
+refused. (`DEMO_PRESET`/`DEMO_IMAGE` env still work as a fallback but are not
+needed.) Cost guards: `DEMO_MAX_SECONDS`, `DEMO_MAX_CONCURRENT`,
 `DEMO_CALLS_PER_IP`, `DEMO_IP_WINDOW_SECONDS` (see `.env.example`). Demo calls
 keep no transcript and send no recap email. The worker must be running.

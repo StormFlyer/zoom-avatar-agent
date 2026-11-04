@@ -269,6 +269,21 @@
         <div class="msg" id="presetMsg"></div>
       </div>
 
+      <div class="card" id="demoCard">
+        <h2>Demo call link</h2>
+        <div class="field">
+          <select id="demoPreset">
+            <option value="">— none (demo calls refused) —</option>
+          </select>
+          <p class="hint">Which saved preset answers the public demo call page.</p>
+        </div>
+        <div class="row">
+          <button class="small" id="btnSaveDemo">Save</button>
+        </div>
+        <p class="hint" id="demoInfo"></p>
+        <div class="msg" id="demoMsg"></div>
+      </div>
+
       <div class="card">
         <h2>Face</h2>
         <div class="avatar-row">
@@ -752,6 +767,38 @@ function fillWorker(w, log) {
 
 // ---------------------------------------------------------------- loading
 
+function fillDemo(d) {
+  const sel = $("demoPreset");
+  sel.innerHTML = '<option value="">— none (demo calls refused) —</option>';
+  for (const p of STATE.presets) {
+    const o = document.createElement("option");
+    o.value = p.id; o.textContent = p.label || p.id;
+    sel.appendChild(o);
+  }
+  sel.value = d.preset || "";
+  const link = location.origin + d.link;
+  let info = d.preset
+    ? `Current demo preset: ${d.preset}${d.image ? " (face " + d.image + ")" : ""}.`
+    : (d.using ? `No preset chosen here; using the old DEMO_PRESET setting (${d.using}).` : "No demo preset chosen.");
+  info += ` Shareable link: ${link}`;
+  if (!d.enabled) info += " (demo is switched off: DEMO_ENABLED is not set)";
+  if (d.problem) info += ` Calls are refused right now: ${d.problem}.`;
+  $("demoInfo").textContent = info;
+}
+
+async function loadDemo() {
+  try { fillDemo(await api("/api/demo")); } catch (e) { show($("demoMsg"), String(e.message || e), "bad"); }
+}
+
+$("btnSaveDemo").addEventListener("click", async () => {
+  try {
+    const d = await api("/api/demo", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ preset: $("demoPreset").value }) });
+    fillDemo(d);
+    show($("demoMsg"), d.preset ? "Saved. The demo call now uses this preset." : "Saved. Demo calls are now refused.", "ok");
+  } catch (e) { show($("demoMsg"), String(e.message || e), "bad"); }
+});
+
 async function loadState() {
   const s = await api("/api/state");
   STATE = s;
@@ -761,6 +808,7 @@ async function loadState() {
   fillTones();
   fillKnowledge();
   fillPresets();
+  loadDemo();
   fillMeetings();
   fillWorker(s.worker);
   STATE.tones = s.tones || [];
@@ -942,7 +990,7 @@ $("btnSavePreset").addEventListener("click", async () => {
       }),
     });
     STATE.presets = r.presets;
-    fillPresets();
+    fillPresets(); loadDemo();
     $("preset").value = r.saved;
     show($("sendMsg"), `Saved preset "${label}".`, "ok");
   } catch (e) {
@@ -958,7 +1006,7 @@ $("btnDeletePreset").addEventListener("click", async () => {
   try {
     const r = await api("/api/presets/" + encodeURIComponent(id), { method: "DELETE" });
     STATE.presets = r.presets;
-    fillPresets();
+    fillPresets(); loadDemo();
     $("preset").value = "";
     show($("sendMsg"), "Preset deleted.", "ok");
   } catch (e) {

@@ -12,19 +12,26 @@ change plus restart is all it takes):
     DEMO_MAX_CONCURRENT   calls at once across everyone (default 2)
     DEMO_CALLS_PER_IP     calls one address may start ... (default 3)
     DEMO_IP_WINDOW_SECONDS ... per this window (default 3600)
-    DEMO_PRESET / DEMO_IMAGE / DEMO_BOT_NAME  which avatar takes the call
+    DEMO_BOT_NAME         the name the avatar gives (default Tessa)
+
+Which avatar takes the call is chosen in the panel ("Demo call link" card) and
+saved in presets.json. DEMO_PRESET / DEMO_IMAGE env are only a fallback for
+older setups. If neither names a face that is in avatars/, calls are refused.
 """
 
 from __future__ import annotations
 
 import datetime
 import json
+import logging
 import os
 import pathlib
 import secrets
 import threading
 import time
 from collections import deque
+
+import catalog
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -36,6 +43,7 @@ AVATAR_DIR = _ROOT / "avatars"
 # Routes that skip the panel login. Everything else stays behind PANEL_PASSWORD.
 PUBLIC_PATHS = {"/call", "/call/poster", "/api/call/token"}
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _lock = threading.Lock()
@@ -99,25 +107,50 @@ def reset() -> None:
         _by_ip.clear()
 
 
-def _metadata(max_seconds: int) -> str:
+def _metadata(max_seconds: int, preset: dict, image: pathlib.Path) -> str:
     meta: dict = {
         "mode": "browser",
         "bot_name": os.getenv("DEMO_BOT_NAME", "").strip() or "Tessa",
         "maxSeconds": max_seconds,
         "joinDelay": 1,
         "requireAddress": False,
-        "frame": _frame(),
+        "frame": _frame(preset),
+        # Both explicit so the agent never guesses a face.
+        "image": image.name,
     }
-    if os.getenv("DEMO_PRESET", "").strip():
-        meta["preset"] = os.getenv("DEMO_PRESET").strip()
-    if os.getenv("DEMO_IMAGE", "").strip() and meta["frame"] == "portrait":
-        meta["image"] = os.getenv("DEMO_IMAGE").strip()  # wide uses AVATAR_IMAGE_WIDE
+    if preset.get("id"):
+        meta["preset"] = preset["id"]
     return json.dumps(meta)
 
 
-def _frame() -> str:
-    f = os.getenv("DEMO_FRAME", "").strip().lower() or os.getenv("AVATAR_FRAME", "").strip().lower()
+def _frame(preset: dict | None = None) -> str:
+    f = str((preset or {}).get("frame") or "").strip().lower()
+    f = f or os.getenv("DEMO_FRAME", "").strip().lower() or os.getenv("AVATAR_FRAME", "").strip().lower()
     return f if f in {"portrait", "wide"} else "portrait"
+
+
+def resolve() -> tuple[dict | None, pathlib.Path | None, str]:
+    """(preset, image path, refusal reason). Reason is "" when the demo is ready.
+
+    The preset picked in the panel wins; DEMO_PRESET / DEMO_IMAGE env are a
+    fallback. Never falls back to "the first face in avatars/"."""
+    pid = catalog.get_demo_preset() or os.getenv("DEMO_PRESET", "").strip()
+    preset: dict = {}
+    if pid:
+        found = [p for p in catalog.list_presets() if str(p.get("id", "")).lower() == pid.lower()]
+        if not found:
+            return None, None, f"demo preset {pid!r} no longer exists"
+        preset = found[0]
+    img = str(preset.get("image") or "").strip() or os.getenv("DEMO_IMAGE", "").strip()
+    if not pid and not img:
+        return None, None, "no demo preset chosen in the panel"
+    if not img:
+        return preset, None, f"demo preset {pid!r} has no face picture"
+    name = pathlib.Path(img).name
+    path = AVATAR_DIR / name
+    if not name or not path.is_file():
+        return preset, None, f"demo face {name!r} is not a file in avatars/"
+    return preset, path, ""
 
 
 def _make_token(room: str, identity: str, metadata: str) -> str:
@@ -164,12 +197,8 @@ async def call_page(k: str = "") -> HTMLResponse:
 
 @router.get("/call/poster")
 async def call_poster(k: str = "") -> FileResponse:
-    img = os.getenv("DEMO_IMAGE", "").strip()
-    if _frame() == "wide" and os.getenv("AVATAR_IMAGE_WIDE", "").strip():
-        img = os.getenv("AVATAR_IMAGE_WIDE").strip()
-    name = pathlib.Path(img).name
-    path = AVATAR_DIR / name if name else None
-    if not enabled() or not _key_ok(k) or path is None or not path.is_file():
+    _, path, _ = resolve()
+    if not enabled() or not _key_ok(k) or path is None:
         raise HTTPException(404)
     return FileResponse(path)
 
@@ -185,6 +214,10 @@ async def call_token(request: Request) -> JSONResponse:
     missing = [k for k in ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET") if not os.getenv(k)]
     if missing:
         return JSONResponse({"error": "Calls are not set up on this server."}, status_code=503)
+    preset, image, reason = resolve()
+    if image is None:
+        logger.warning("Demo call refused: %s", reason)
+        return JSONResponse({"error": "Calls are not set up on this server."}, status_code=503)
 
     room = f"demo-{secrets.token_hex(8)}"
     refused = _reserve(_client_ip(request), room, time.time())
@@ -199,8 +232,8 @@ async def call_token(request: Request) -> JSONResponse:
             status_code=503,
         )
     max_seconds = _int("DEMO_MAX_SECONDS", 600)
-    token = _make_token(room, f"guest-{secrets.token_hex(4)}", _metadata(max_seconds))
+    token = _make_token(room, f"guest-{secrets.token_hex(4)}", _metadata(max_seconds, preset or {}, image))
     return JSONResponse(
         {"url": os.environ["LIVEKIT_URL"], "token": token, "room": room,
-         "maxSeconds": max_seconds, "frame": _frame()}
+         "maxSeconds": max_seconds, "frame": _frame(preset)}
     )
